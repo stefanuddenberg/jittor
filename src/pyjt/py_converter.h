@@ -308,6 +308,23 @@ DEF_IS(ArrayArgs, T) from_py_object(PyObject* obj) {
         args.buffer.reset(new char[size]);
         args.ptr = (void*)args.buffer.get();
         memcpy((void*)args.buffer.get(), (void*)arr->data, size);
+        if (Py_TYPE(obj) != PyArray_Type && args.dtype.dsize()==8) {
+            // convert to 32bit
+            auto num = size/8;
+            if (args.dtype.is_int()) {
+                auto* __restrict__ i64 = (int64*)args.ptr;
+                auto* __restrict__ i32 = (int32*)args.ptr;
+                for (int i=0; i<num; i++)
+                    i32[i] = (int32)i64[i];
+                args.dtype = ns_int32;
+            } else if (args.dtype.is_float()) {
+                auto* __restrict__ f64 = (float64*)args.ptr;
+                auto* __restrict__ f32 = (float32*)args.ptr;
+                for (int i=0; i<num; i++)
+                    f32[i] = (float32)f64[i];
+                args.dtype = ns_float32;
+            }
+        }
         return args;
     }
     T args;
@@ -602,7 +619,7 @@ DEF_IS(GradCallback, T) from_py_object(PyObject* obj) {
     Py_INCREF(obj);
     T func(
         // callback
-        [obj](int n_o, Var** douts, int n_i, VarPtr* dins) {
+        [obj](int n_o, typename T::Var** douts, int n_i, typename T::VarPtr* dins) {
             PyObjHolder list(PyTuple_New(n_o));
             for (int i=0; i<n_o; i++) {
                 if (douts[i]) {
