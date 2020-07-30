@@ -400,6 +400,7 @@ void Executor::run_sync(vector<Var*> vars, bool device_sync) {
         #endif
         last_is_cuda = is_cuda;
         op->do_run_after_prepare();
+	checkCudaErrors(cudaGetLastError());
         LOGvvv << "Finished Op(" >> op->name() << rid >> 
             "/" >> queue.size() >> ") output:" << op->outputs();
         if (is_fused_op) {

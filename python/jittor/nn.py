@@ -56,14 +56,35 @@ Example::
     b = b.broadcast(shape, [len(shape)-3])
     return (a*b).sum(len(shape)-2)
 
+from pdb import set_trace as st
 def matmul(a, b):
-    assert len(a.shape) >= 2 and len(b.shape) == 2
+    assert len(a.shape) >= 2 and len(b.shape) >= 2
     assert a.shape[-1] == b.shape[-2]
 
-    shape = list(a.shape) + [b.shape[-1]]
-    a = a.broadcast(shape, [len(shape)-1])
-    b = b.broadcast(shape)
-    return (a*b).sum(len(shape)-2)
+    len_a = len(a.shape)
+    len_b = len(b.shape)
+    len_max = max(len_a, len_b)
+    a_shape = (len_max - len_a) * [1,] + list(a.shape)
+    b_shape = (len_max - len_b) * [1,] + list(b.shape)
+
+    a_rep = []
+    b_rep = []
+    for i in range(len_max-2):
+        if a_shape[i] == 1 or b_shape[i] == 1:
+            a_rep.append(b_shape[i])
+            b_rep.append(a_shape[i])
+        else:
+            if a_shape[i] == b_shape[i]:
+                a_rep.append(1)
+                b_rep.append(1)
+            else:
+                raise(f"{a_shape[i]} and {b_shape[i]} must be same.")
+    a_rep += [1,1,b.shape[-1],]
+    b_rep += [a.shape[-2],1,1,]
+    a = a.unsqueeze(-1).repeat(a_rep)
+    b = b.unsqueeze(-3).repeat(b_rep)
+
+    return (a*b).sum(len(a.shape)-2)
 jt.Var.matmul = jt.Var.__matmul__ = matmul
 jt.Var.__imatmul__ = lambda a,b: a.assign(matmul(a,b))
 
@@ -290,6 +311,38 @@ class InstanceNorm2d(Module):
         b = self.bias.broadcast(x, [0,2,3])
         return norm_x * w + b
 
+
+from pdb import set_trace as st
+class GroupNorm(Module):
+    def __init__(self, num_groups, num_channels, eps=1e-05, affine=None, is_train=True, sync=True):
+        assert affine == None
+        self.num_groups = num_groups
+        self.num_channels = num_channels
+        self.eps = eps
+        self.is_train = is_train
+        self.sync = sync
+        self.weight = init.constant((num_channels,), "float32", 1.0)
+        self.bias = init.constant((num_channels,), "float32", 0.0)
+
+    def execute(self, x):
+        N,C,H,W = x.shape
+        assert C == self.num_channels
+        assert C % self.num_groups == 0
+        x_ = x.reindex([N, int(C/self.num_groups), self.num_groups, H, W], [
+            "i0", f"i2*{C/self.num_groups}+i1", "i3", "i4"
+        ])
+        xmean = jt.mean(x_, dims=[1,3,4], keepdims=1).reindex(x.shape, ["i0", "0", f"i1/({C}/{self.num_groups})","0", "0"])
+        x2mean = jt.mean(x_*x_, dims=[1,3,4], keepdims=1).reindex(x.shape, ["i0", "0", f"i1/({C}/{self.num_groups})","0", "0"])
+        if self.sync and jt.in_mpi:
+            xmean = xmean.mpi_all_reduce("mean")
+            x2mean = x2mean.mpi_all_reduce("mean")
+
+        xvar = jt.maximum(x2mean-xmean*xmean, 0)
+        norm_x = (x-xmean)/jt.sqrt(xvar+self.eps)
+        w = self.weight.broadcast(x, [0,2,3])
+        b = self.bias.broadcast(x, [0,2,3])
+        return norm_x * w + b
+
 Relu = jt.make_module(relu)
 ReLU = Relu
 Leaky_relu = jt.make_module(leaky_relu, 2)
@@ -443,7 +496,7 @@ class ReflectionPad2d(Module):
         elif isinstance(self.padding, tuple):
             self.pl, self.pr, self.pt, self.pb = self.padding
         else:
-            raise TypeError(f"ReflectionPad2d padding just support int or tuple, but found {type(padding)}")
+            raise TypeError(f"ReflectionPad2d padding just support or tuple, but found {type(padding)}")
 
     def execute(self, x):
         n,c,h,w = x.shape
@@ -471,12 +524,13 @@ class ZeroPad2d(Module):
         elif isinstance(self.padding, tuple):
             self.pl, self.pr, self.pt, self.pb = self.padding
         else:
-            raise TypeError(f"ZeroPad2d padding just support int or tuple, but found {type(padding)}")
+            raise TypeError(f"ZeroPad2d padding just support or tuple, but found {type(padding)}")
 
     def execute(self, x):
         n,c,h,w = x.shape
         return x.reindex([n,c,h+self.pt+self.pb,w+self.pl+self.pr], ["i0","i1",f"i2-{self.pt}",f"i3-{self.pl}"])
 
+from pdb import set_trace as st
 class ConstantPad2d(Module):
     def __init__(self, padding, value):
         self.padding = padding
@@ -488,12 +542,19 @@ class ConstantPad2d(Module):
         elif isinstance(self.padding, tuple):
             self.pl, self.pr, self.pt, self.pb = self.padding
         else:
-            raise TypeError(f"ConstantPad2d padding just support int or tuple, but found {type(padding)}")
+            raise TypeError(f"ConstantPad2d padding just support or tuple, but found {type(padding)}")
         self.value = value
 
     def execute(self, x):
-        n,c,h,w = x.shape
-        return x.reindex([n,c,h+self.pt+self.pb,w+self.pl+self.pr], ["i0","i1",f"i2-{self.pt}",f"i3-{self.pl}"], overflow_value=self.value)
+        assert len(x.shape) >= 2
+        shape = x.shape
+        tar_shape = shape[0:-2] + [shape[-2]+self.pt+self.pb,shape[-1]+self.pl+self.pr]
+        tar_dims = []
+        for i in range(len(shape)-2):
+            tar_dims.append(f"i{i}")
+        tar_dims.append(f"i{i+1}-{self.pt}")
+        tar_dims.append(f"i{i+2}-{self.pl}")
+        return x.reindex(tar_shape, tar_dims, overflow_value=self.value)
 
 class ReplicationPad2d(Module):
     def __init__(self, padding):
@@ -506,7 +567,7 @@ class ReplicationPad2d(Module):
         elif isinstance(self.padding, tuple):
             self.pl, self.pr, self.pt, self.pb = self.padding
         else:
-            raise TypeError(f"ReplicationPad2d padding just support int or tuple, but found {type(padding)}")
+            raise TypeError(f"ReplicationPad2d padding just support or tuple, but found {type(padding)}")
 
     def execute(self, x):
         n,c,h,w = x.shape
@@ -557,6 +618,14 @@ class Sigmoid(Module):
         super().__init__()
     def execute(self, x) :
         return x.sigmoid()
+
+class Softplus(Module):
+    def __init__(self, beta=1, threshold=20):
+        self.beta = beta
+        self.threshold = threshold
+
+    def execute(self, x):
+        return 1 / self.beta * jt.log(1 + (self.beta * x).exp())
 
 class Resize(Module):
     def __init__(self, size, mode="nearest", align_corners=False):
@@ -622,6 +691,44 @@ class Upsample(Module):
                 int(x.shape[2]*self.scale_factor[0]), 
                 int(x.shape[3]*self.scale_factor[1])),
             mode=self.mode)
+
+def grid_sample(input, grid, mode='bilinear', padding_mode='zeros'):
+    r"""
+    input: [N, C, Hi, Wi]
+    grid: [N, Ho, Wo, 2]
+    output: [N, C, Ho, Wo]
+    """
+    assert padding_mode == 'zeros'
+    Ni, Ci, Hi, Wi = input.shape
+    No, Ho, Wo, D = grid.shape
+    assert D == 2
+    assert Ni == No
+    assert len(input.shape) == 4 and len(grid.shape)
+
+    grid = (((grid - grid.min()) / (grid.max() - grid.min())) - 0.5) * 2
+    nid, cid, hid, wid = jt.index((Ni,Ci,Ho,Wo))
+    x = ((grid[:,:,:,1].unsqueeze(1).repeat([1,Ci,1,1]) + 1) / 2) * (Hi - 1)
+    y = ((grid[:,:,:,0].unsqueeze(1).repeat([1,Ci,1,1]) + 1) / 2) * (Wi - 1)
+    
+    return _interpolate(input, x, y, (nid,cid), mode)
+
+    # ix = ((grid[:,:,:,0] + 1) / 2) * (Wi - 1)
+    # iy = ((grid[:,:,:,1] + 1) / 2) * (Hi - 1)
+
+    # ix_nw = ix.int();
+    # iy_nw = iy.int();
+    # ix_ne = ix_nw + 1;
+    # iy_ne = iy_nw;
+    # ix_sw = ix_nw;
+    # iy_sw = iy_nw + 1;
+    # ix_se = ix_nw + 1;
+    # iy_se = iy_nw + 1;
+
+    # nw = (ix_se - ix)    * (iy_se - iy);
+    # ne = (ix    - ix_sw) * (iy_sw - iy);
+    # sw = (ix_ne - ix)    * (iy    - iy_ne);
+    # se = (ix    - ix_nw) * (iy    - iy_nw);
+
 
 class Sequential(Module):
     def __init__(self, *args):

@@ -623,12 +623,17 @@ can also be None)::
 
     '''
     def __call__(self, *args):
+        backup = args
         args = list(args)
         taped_inputs = []
         taped_outputs = []
         input_mask = [-1] * len(args)
         for i,v in enumerate(args):
             if isinstance(v, Var):
+                if v.is_stop_grad():
+                    # -2 in input_mask represents it is stop_grad
+                    input_mask[i] = -2
+                    continue
                 v = v.tape()
                 input_mask[i] = len(taped_inputs)
                 args[i] = v
@@ -664,7 +669,8 @@ can also be None)::
         for i, r in enumerate(ret):
             j = self.input_mask[i]
             if j<0:
-                assert r is None, f"{type(self)}'s {i}-th returned grad should be None, "\
+                # -2 in input_mask represents it is stop_grad
+                assert r is None or j==-2, f"{type(self)}'s {i}-th returned grad should be None, "\
                     "because the input value is not jittor variable."
             else:
                 new_ret.append(r)
@@ -753,3 +759,31 @@ from .nn import matmul
 from . import contrib
 from .contrib import concat
 from . import hub
+from .misc import *
+
+def cross(input, other, dim=-1):
+    # (a1,a2,a3)x(b1,b2,b3)=(a2b3-a3b2,a3b1-a1b3,a1b2-a2b1)
+    assert input.shape==other.shape, "input shape and other shape must be same"
+    assert input.shape[dim]==3, "input dim shape must be 3"
+    from pdb import set_trace as st
+    # a1 = input[dim][1] * other[dim][2] - input[dim][2] * other[dim][1]
+    # a2 = input[dim][2] * other[dim][0] - input[dim][0] * other[dim][2]
+    # a3 = input[dim][0] * other[dim][1] - input[dim][1] * other[dim][0]
+    # a1 = input[:,1] * other[:,2] - input[:,2] * other[:,1]
+    # a2 = input[:,2] * other[:,0] - input[:,0] * other[:,2]
+    # a3 = input[:,0] * other[:,1] - input[:,1] * other[:,0]
+    a1 = input[(slice(None,),)*dim+(1,)]*other[(slice(None,),)*dim+(2,)]-input[(slice(None,),)*dim+(2,)]*other[(slice(None,),)*dim+(1,)]
+    a2 = input[(slice(None,),)*dim+(2,)]*other[(slice(None,),)*dim+(0,)]-input[(slice(None,),)*dim+(0,)]*other[(slice(None,),)*dim+(2,)]
+    a3 = input[(slice(None,),)*dim+(0,)]*other[(slice(None,),)*dim+(1,)]-input[(slice(None,),)*dim+(1,)]*other[(slice(None,),)*dim+(0,)]
+    return contrib.concat([a1.unsqueeze(dim),a2.unsqueeze(dim),a3.unsqueeze(dim)], dim=dim)
+Var.cross = cross
+
+def normalize(input, p=2, dim=1, eps=1e-12):
+    """
+        input – input array of any shape
+        p (float) – the exponent value in the norm formulation. Default: 2
+        dim (int) – the dimension to reduce. Default: 1
+        eps (float) – small value to avoid division by zero. Default: 1e-12
+    """
+    return input / maximum(input.sqr().sum(1,True).sqrt(), eps)
+Var.normalize = normalize
