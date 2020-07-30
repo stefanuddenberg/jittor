@@ -7,7 +7,7 @@
 # This file is subject to the terms and conditions defined in
 # file 'LICENSE.txt', which is part of this source code package.
 # ***************************************************************
-__version__ = '1.1.6.7'
+__version__ = '1.1.7.0'
 from . import lock
 with lock.lock_scope():
     from . import compiler
@@ -283,6 +283,9 @@ Var.flatten = flatten
 def detach_inplace(x):
     return x.swap(x.stop_grad().clone())
 Var.start_grad = Var.detach_inplace = detach_inplace
+
+def detach(x):
+    return x.detach()
 
 def unsqueeze(x, dim):
     shape = list(x.shape)
