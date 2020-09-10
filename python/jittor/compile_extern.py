@@ -118,9 +118,9 @@ def setup_cuda_extern():
         return
     LOG.vv("setup cuda extern...")
     cache_path_cuda = os.path.join(cache_path, "cuda-11.0")
-    cuda_include = os.path.join(jittor_path, "extern", "cuda-11.0", "inc")
+    cuda_include = os.path.join(jittor_path, "extern", "cuda", "inc")
     make_cache_dir(cache_path_cuda)
-    cuda_extern_src = os.path.join(jittor_path, "extern", "cuda-11.0", "src")
+    cuda_extern_src = os.path.join(jittor_path, "extern", "cuda", "src")
     cuda_extern_files = [os.path.join(cuda_extern_src, name)
                          for name in os.listdir(cuda_extern_src)]
     so_name = os.path.join(cache_path_cuda, "cuda_extern.so")
